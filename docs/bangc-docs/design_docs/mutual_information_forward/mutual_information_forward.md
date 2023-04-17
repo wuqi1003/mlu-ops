@@ -222,7 +222,7 @@ __global__ void mutual_information_kernel(
 2. MutualInformationForward 算子的接口
 
     ```c++  
-    mluOpStatus_t CNNL_WIN_API mluOpMutualInformationForward(
+    mluOpStatus_t MLUOP_WIN_API mluOpMutualInformationForward(
       mluOpHandle_t handle,
       const mluOpTensorDescriptor_t px_desc,
       const void * px,
