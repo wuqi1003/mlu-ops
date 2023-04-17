@@ -267,7 +267,6 @@ _mlu_global_ void mluBlockMutualInformationForward( const DTYPE *px,
                                                     const int batches,
                                                     const int max_s,
                                                     const int max_t,
-                                                    const bool modified,
                                                     DTYPE *p,
                                                     DTYPE *ans){
     // 按 batch 拆分
@@ -287,34 +286,40 @@ _mlu_global_ void mluBlockMutualInformationForward( const DTYPE *px,
     int s_begin = 0, s_end = max_s - 1, s_len = max_s;
     int t_begin = 0, t_end = max_t - 1, t_len = max_t;
  
-    // 根据 modified 给定 px 最低维大小
+    //给定最低维大小
     int max_sx = max_s - 1;
     int max_tx = max_t;
     int max_sy = max_s;
     int max_ty = max_t - 1;
-    if(modified) {
-        max_tx = max_t - 1;
-    }
+
+    if(boundary != NONE) {
+        for (int b = b_start; b < b_end; ++b) {
+          // memcpy px, py form input gdram
+          __memcpy_async(nram_px, px + b * max_sx * max_tx, sizeof(DTYPE), GDRAM2NRAM);
+          __memcpy_async(nram_py, py + b * max_sy * max_ty, sizeof(DTYPE), GDRAM2NRAM);
+          
+          // update begin, end, len
+          s_begin = boundary[b][0];
+          t_begin = boundary[b][1];
+          s_end = boundary[b][2];
+          t_end = boundary[b][3];
+          s_len = s_end - s_begin + 1;
+          t_len = t_end - t_begin + 1;
+          _asm_ volatile("sync;");
  
-    for (int b = b_start; b < b_end; ++b) {
+          // 按标量计算方式得到 p, ans
+          mutualInformationForward(nram_px, nram_py, nram_p, b, s_begin, s_end, t_begin, t_end,
+                                 max_sx, max_tx, max_sy, max_ty, max_s, max_y, ans);
+    }
+    else {
+      for (int b = b_start; b < b_end; ++b) {
         // memcpy px, py form input gdram
         __memcpy_async(nram_px, px + b * max_sx * max_tx, sizeof(DTYPE), GDRAM2NRAM);
         __memcpy_async(nram_py, py + b * max_sy * max_ty, sizeof(DTYPE), GDRAM2NRAM);
- 
-        // update begin, end, len
-        if(boundary != NONE) {
-            s_begin = boundary[b][0];
-            t_begin = boundary[b][1];
-            s_end = boundary[b][2];
-            t_end = boundary[b][3];
-            s_len = s_end - s_begin + 1;
-            t_len = t_end - t_begin + 1;
-        }
         _asm_ volatile("sync;");
- 
         // 按标量计算方式得到 p, ans
         mutualInformationForward(nram_px, nram_py, nram_p, b, s_begin, s_end, t_begin, t_end,
-                                 max_sx, max_tx, max_sy, max_ty, max_s, max_y, modified, ans);
+                                 max_sx, max_tx, max_sy, max_ty, max_s, max_y, ans);
     }
 }
 
@@ -333,30 +338,24 @@ _mlu_func_ void mutualInformationForward(DTYPE *nram_px,
                                          const int max_ty,
                                          const int max_s,
                                          const int max_t,
-                                         const bool modified,
                                          DTYPE *ans) {
     // nram_p[s_begin][t_begin] = 0;
     nram_p[s_begin * max_t + t_begin] = (DTYPE)0;
      
     // compute p when t == 0
     int index_s_t = 0
-    if (modified) {
-        for (int s = s_begin + 1; s <= s_end; ++s) {
-            nram_p[s * max_t + t_begin] = -inf;
-        }
-    } else {
-        for (int s = s_begin + 1; s <= s_end; ++s) {
-            nram_p[s * max_t + t_begin] = nram_p[(s - 1) * max_t + t_begin] + nram_px[(s - 1) * max_tx + t_begin];
-        }
+
+    for (int s = s_begin + 1; s <= s_end; ++s) {
+        nram_p[s * max_t + t_begin] = nram_p[(s - 1) * max_t + t_begin] + nram_px[(s - 1) * max_tx + t_begin];
     }
- 
+
     // compute p when s == 0
     for (int t = t_begin + 1; t <= t_end; ++t) {    
         nram_p[t] = nram_p[t - 1] + nram_py[t - 1];
     }
  
     // compute p when s > 0 and t > 0
-    int t_off = (modified ? -1 : 0);
+    int t_off = 0;
     for (int s = s_begin + 1; s <= s_end; ++s) {
         DTYPE p_s_t1 = nram_p[s * max_t + t_begin];
         for (int t = t_begin + 1; t <= t_end; ++t){ 
@@ -383,7 +382,6 @@ void mluBlockMutualInformationForwardByDiagonal3Pipeline(const DTYPE *px,
                                                          const int batches,
                                                          const int max_s,
                                                          const int max_t,
-                                                         const bool modified,
                                                          DTYPE *ans) {
     // 按 batches 拆分
     const int num_b_per_core = batches / taskDim;
@@ -403,14 +401,11 @@ void mluBlockMutualInformationForwardByDiagonal3Pipeline(const DTYPE *px,
     int s_begin = 0, s_end = max_s - 1, s_len = max_s;
     int t_begin = 0, t_end = max_t - 1, t_len = max_t;
  
-    // 根据 modified 给定 px 最低维大小
+    // 给定最低维大小
     int max_sx = max_s - 1;
     int max_tx = max_t;
     int max_sy = max_s;
     int max_ty = max_t - 1;
-    if(modified) {
-        max_tx = max_t - 1;
-    }
  
     for (int b = b_start; b < b_end; ++b) {
         // memcpy px, py form input gdram
@@ -430,7 +425,7 @@ void mluBlockMutualInformationForwardByDiagonal3Pipeline(const DTYPE *px,
          
         // 按对角线3级流水方式获得p,ans
         mutualInformationForwardByDiagonal3Pipeline(nram_px, nram_py, nram_p, b, s_begin, s_end, s_len, t_begin, t_end, t_len,
-                                                    max_sx, max_tx, max_sy, max_ty, max_s, max_y, modified, ans);
+                                                    max_sx, max_tx, max_sy, max_ty, max_s, max_y, ans);
     }
     return;
 }
@@ -452,7 +447,6 @@ void mutualInformationForwardByDiagonal3Pipeline(DTYPE *nram_px,
                                                  const int max_ty,
                                                  const int max_s,
                                                  const int max_t,
-                                                 const bool modified,
                                                  DTYPE *ans) {
     int min_of_T_S = std::min(t_len, s_len);
     int max_of_T_S = std::max(t_len, s_len);
@@ -471,6 +465,7 @@ void mutualInformationForwardByDiagonal3Pipeline(DTYPE *nram_px,
     ping_p[ping_pong_gap] = (float)0;
  
     int repeat = t_len + s_len - 2;
+    _asm_ volatile("sync;");
     for (int i = 0; i < repeat + 2; ++i) {
         if (i < repeat) {
             pipelineLoad(nram_py, nram_px, max_sx, max_tx, max_sy, max_ty, s_begin, s_end, t_begin, t_end,
