@@ -127,15 +127,14 @@ ans = p(s_end,t_end)
 
 |参数|语义|类型(输入/输出)|支持类型|物理布局|规模说明|
 |---|----|-------------|-------|------|-------|
-|handle|句柄|输入|cnnlHandle_t | / |无|
-|mutual_information_forward_desc|存放算子信息结构体| 输入 |cnnlMutualInformationForwardDescriptor_t |	 / | 无 |
-|px_desc | 对输入信息的描述，包含维度、布局和数据类型信息 | 输入  |         	cnnlTensorDescriptor_t   |	/     |  	无    |
+|handle|句柄|输入|mluOpHandle_t | / |无|
+|px_desc | 对输入信息的描述，包含维度、布局和数据类型信息 | 输入  |         	mluOpTensorDescriptor_t   |	/     |  	无    |
 | px  |     	输入概率数据    |  输入  | float |  ARRAY  | 	3D Tensor	|
-|py_desc | 对输入信息的描述，包含维度、布局和数据类型信息 | 输入 |          	cnnlTensorDescriptor_t   |	/ |      	无       	|
+|py_desc | 对输入信息的描述，包含维度、布局和数据类型信息 | 输入 |          	mluOpTensorDescriptor_t   |	/ |      	无       	|
 |py| 输入概率数据|  输入 |  float | ARRAY   |	3D Tensor	|
-|boundary_desc |	对序列与标签起始信息的描述，包含维度、布局和数据类型信息     |      	输入  |         	cnnlTensorDescriptor_t   |	/  |     	无      |
+|boundary_desc |	对序列与标签起始信息的描述，包含维度、布局和数据类型信息     |      	输入  |         	mluOpTensorDescriptor_t   |	/  |     	无      |
 | boundary |  序列与标签起始信息 |   输入 | int32  | ARRAY   |	2D Tensor |	
-|ans_desc | 对输出互信息的描述，包含维度、布局和数据类型信息 | 输入 | cnnlTensorDescriptor_t|	/     |  	无    |   	
+|ans_desc | 对输出互信息的描述，包含维度、布局和数据类型信息 | 输入 | mluOpTensorDescriptor_t|	/     |  	无    |   	
 |ans| 输出互信息 |  输出 | 	float|  ARRAY   |	1D Tensor |	
 
 
@@ -152,8 +151,10 @@ ans = p(s_end,t_end)
 |------------|------------------------------------------------------------|
 |数据类型限制	|px、py只支持float32类型与竞品对齐 |                                      	
 |布局限制    | px、py输入必须为3D Tensor，但px最低维度size可变，与modified模式相关|
-|	规模限制    | 由于370和590上nram空间大小不同，因此规模大小限制也不同<br>在370上，(T+1) \* (S+1) ≤ 54612<br>在590上，(T+1) \* (S+1) ≤ 32768；	|                               	
-|功能限制     |	boundary中只包含为正整数，若出现负数则算子的功能是未定义的行为|	
+|	规模限制    | 由于370和590上nram空间大小不同，因此规模大小限制也不同<br>在370上，(T+1) \* (S+1) ≤ 54612<br>在590上，(T+1) \* (S+1) ≤ 32768；不支持	|                               large tensor	
+|功能限制     |	boundary中只包含为正整数，若出现负数则算子的功能是未定义的行为，（python层已有相关防呆）
+0<= begin_symbol <= end_symbol <= S
+0<= begin_frame <= end_frame <= T|	
 |功能限制     |	当输入含有NaN/INF时，此算子的功能是未定义的行为|
 |功能限制     |	不支持原位|                                                   	
 |功能限制     |	不支持stride机制|                                             	
@@ -166,8 +167,8 @@ ans = p(s_end,t_end)
 ### 1.5 验收标准
 
 #### 1.5.1 精度验收标准（不同算子验收标准见外网wiki=52441150）
-* CNNL精度验收标准：该算子为复合类算子，采用当前的diff1 diff2评价公式，验收标准为3e-3。由于该算子不支持double，因此不使用静态阈值
- 
+* CNNL精度验收标准：该算子为复合类算子，采用当前的diff1 diff2评价公式，验收标准为3e-3。由于该算子不支持double，因此使用静态阈值。
+ 
 
 #### 1.5.2 性能验收标准
 * 本次优先交付功能，后续视情况再优化性能；
@@ -204,51 +205,34 @@ __global__ void mutual_information_kernel(
 
 ### 2.2 接口设计
 
-1. MutualInformationForward 描述符的相关接口
-
-    (1) MutualInformationForward 描述符的创建接口
-
-    ```c++   
-    cnnlStatus_t CNNL_WIN_API cnnlCreateMutualInformationForwardDescriptor(   
-      cnnlMutualInformationForwardDescriptor_t *mutual_information_forward_desc)   
-    ```
-
-    (2) MutualInformationForward 描述符的设置接口
-
+1. MutualInformationForward workspace的相关接口
     ```c++
-    cnnlStatus_t CNNL_WIN_API cnnlSetMutualInformationForwardDescriptor(   
-      cnnlMutualInformationForwardDescriptor_t mutual_information_forward_desc)
+    mluOpStatus_t MLUOP_WIN_API
+    mluOpGetMutualInformationForwardWorkspaceSize(mluOpHandle_t handle,
+                                               const mluOpTensorDescriptor_t px_desc,
+                                               const mluOpTensorDescriptor_t py_desc,
+                                               const mluOpTensorDescriptor_t opt_boundary_desc,
+                                               const mluOpTensorDescriptor_t p_desc,
+                                               const mluOpTensorDescriptor_t ans_desc,
+                                               size_t *workspace_size);
     ```
 
-    (3) MutualInformationForward 描述符的获取接口
 
-    ```c++   
-    cnnlStatus_t CNNL_WIN_API cnnlGetMutualInformationForwardDescriptor(   
-      cnnlMutualInformationForwardDescriptor_t mutual_information_forward_desc)   
-    ```
-
-    (4) MutualInformationForward 描述符的销毁接口
-
-    ```c++   
-    cnnlStatus_t CNNL_WIN_API cnnlDestroyMutualInformationForwardDescriptor(   
-        cnnlMutualInformationForwardDescriptor_t mutual_information_forward_desc)   
-    ```
 
 2. MutualInformationForward 算子的接口
 
     ```c++  
-    cnnlStatus_t CNNL_WIN_API cnnlMutualInformationForward(
-      cnnlHandle_t handle,
-      const cnnlMutualInformationForwardDescriptor_t mutual_information_forward_desc,
-      const cnnlTensorDescriptor_t px_desc,
+    mluOpStatus_t CNNL_WIN_API mluOpMutualInformationForward(
+      mluOpHandle_t handle,
+      const mluOpTensorDescriptor_t px_desc,
       const void * px,
-      const cnnlTensorDescriptor_t py_desc,
+      const mluOpTensorDescriptor_t py_desc,
       const void * py,
-      const cnnlTensorDescriptor_t boundary_desc,
-      const void * boundary,
-      const cnnlTensorDescriptor_t p_desc,
+      const mluOpTensorDescriptor_t opt_boundary_desc,
+      const void * opt_boundary,
+      const mluOpTensorDescriptor_t p_desc,
       void * p,
-      const cnnlTensorDescriptor_t ans_desc, 
+      const mluOpTensorDescriptor_t ans_desc, 
       void * ans)；
     ```
 
